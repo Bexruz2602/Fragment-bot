@@ -2,6 +2,7 @@ from playwright.sync_api import sync_playwright
 import requests
 import time
 import os
+import re
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
@@ -22,8 +23,6 @@ def send_message(text):
 
 def get_gifts():
 
-    gifts = set()
-
     with sync_playwright() as p:
 
         browser = p.chromium.launch(
@@ -35,17 +34,26 @@ def get_gifts():
 
         page.goto(URL, timeout=60000)
 
-        page.wait_for_timeout(8000)
+        page.wait_for_timeout(7000)
 
-        cards = page.locator("body").inner_text()
+        text = page.locator("body").inner_text()
 
         browser.close()
 
-        return cards
+        # Gift patternlarini olish
+        gifts = set()
 
-print("Loading...")
+        matches = re.findall(r'[A-Za-z0-9_\- ]+#\d+', text)
 
-old = get_gifts()
+        for m in matches:
+
+            gifts.add(m.strip())
+
+        return gifts
+
+print("Loading existing gifts...")
+
+known = get_gifts()
 
 print("Bot started...")
 
@@ -55,15 +63,17 @@ while True:
 
         current = get_gifts()
 
-        if current != old:
+        new_gifts = current - known
+
+        for gift in new_gifts:
+
+            print("NEW:", gift)
 
             send_message(
-                "🎁 Yangi gift yoki auction paydo bo'ldi!"
+                f"🎁 New Gift!\n\n{gift}"
             )
 
-            print("NEW CHANGE")
-
-            old = current
+        known = current
 
         time.sleep(15)
 
