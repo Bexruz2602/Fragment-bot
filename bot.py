@@ -2,7 +2,6 @@ from playwright.sync_api import sync_playwright
 import requests
 import time
 import os
-import re
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
@@ -23,6 +22,8 @@ def send_message(text):
 
 def get_gifts():
 
+    gifts = set()
+
     with sync_playwright() as p:
 
         browser = p.chromium.launch(
@@ -34,26 +35,29 @@ def get_gifts():
 
         page.goto(URL, timeout=60000)
 
-        page.wait_for_timeout(7000)
+        page.wait_for_timeout(10000)
 
-        text = page.locator("body").inner_text()
+        # SAYTDAGI BARCHA LINKLARNI OLADI
+        links = page.eval_on_selector_all(
+            "a",
+            "els => els.map(e => e.href)"
+        )
+
+        for link in links:
+
+            if "gift" in link.lower():
+
+                gifts.add(link)
 
         browser.close()
 
-        # Gift patternlarini olish
-        gifts = set()
-
-        matches = re.findall(r'[A-Za-z0-9_\- ]+#\d+', text)
-
-        for m in matches:
-
-            gifts.add(m.strip())
-
-        return gifts
+    return gifts
 
 print("Loading existing gifts...")
 
 known = get_gifts()
+
+print("KNOWN:", len(known))
 
 print("Bot started...")
 
@@ -63,22 +67,26 @@ while True:
 
         current = get_gifts()
 
+        print("CURRENT:", len(current))
+
         new_gifts = current - known
 
-        for gift in new_gifts:
+        if new_gifts:
 
-            print("NEW:", gift)
+            for gift in new_gifts:
 
-            send_message(
-                f"🎁 New Gift!\n\n{gift}"
-            )
+                print("NEW:", gift)
+
+                send_message(
+                    f"🎁 New Gift!\n\n{gift}"
+                )
 
         known = current
 
-        time.sleep(15)
+        time.sleep(10)
 
     except Exception as e:
 
         print("ERROR:", e)
 
-        time.sleep(30)
+        time.sleep(20)
