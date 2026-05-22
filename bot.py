@@ -21,57 +21,46 @@ def send_message(text):
 
 def get_gifts():
 
-    gifts = set()
-
     with sync_playwright() as p:
 
         browser = p.chromium.launch(
             headless=True,
-            args=["--no-sandbox", "--disable-setuid-sandbox"]
+            args=["--no-sandbox"]
         )
 
         page = browser.new_page()
 
         page.goto(URL, timeout=60000)
 
-        page.wait_for_timeout(5000)
+        page.wait_for_timeout(8000)
 
-        links = page.locator("a").evaluate_all(
-            "(elements) => elements.map(e => e.href)"
-        )
-
-        for link in links:
-
-            if "/gift/" in link or "/gifts/" in link:
-                gifts.add(link)
+        html = page.content()
 
         browser.close()
 
-    return gifts
+        return html
 
-print("Loading existing gifts...")
+print("Loading...")
 
-known = get_gifts()
+old_html = get_gifts()
 
-print("Bot started...")
+print("Bot started")
 
 while True:
 
     try:
 
-        current = get_gifts()
+        new_html = get_gifts()
 
-        new_gifts = current - known
-
-        for gift in new_gifts:
-
-            print("NEW:", gift)
+        if new_html != old_html:
 
             send_message(
-                f"🎁 New NFT Gift!\n\n{gift}"
+                "🎁 MarketApp gifts sahifasida o'zgarish bo'ldi!"
             )
 
-        known = current
+            print("CHANGE DETECTED")
+
+            old_html = new_html
 
         time.sleep(5)
 
