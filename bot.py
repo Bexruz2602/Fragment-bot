@@ -11,6 +11,7 @@ URL = "https://marketapp.ws/gifts/?tab=nfts&sort_by=recently_touch&filter_by=auc
 known = set()
 
 def send_message(text):
+
     requests.get(
         f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
         params={
@@ -20,6 +21,8 @@ def send_message(text):
     )
 
 def get_gifts():
+
+    gifts = set()
 
     with sync_playwright() as p:
 
@@ -32,40 +35,53 @@ def get_gifts():
 
         page.goto(URL, timeout=60000)
 
-        page.wait_for_timeout(8000)
+        page.wait_for_timeout(7000)
 
-        html = page.content()
+        links = page.eval_on_selector_all(
+            "a",
+            "elements => elements.map(e => e.href)"
+        )
+
+        for link in links:
+
+            if "/gift/" in link:
+
+                gifts.add(link)
 
         browser.close()
 
-        return html
+    return gifts
 
-print("Loading...")
+print("Loading existing gifts...")
 
-old_html = get_gifts()
+known = get_gifts()
 
-print("Bot started")
+print("Bot started...")
 
 while True:
 
     try:
 
-        new_html = get_gifts()
+        current = get_gifts()
 
-        if new_html != old_html:
+        new_gifts = current - known
 
-            send_message(
-                "🎁 MarketApp gifts sahifasida o'zgarish bo'ldi!"
-            )
+        if new_gifts:
 
-            print("CHANGE DETECTED")
+            for gift in new_gifts:
 
-            old_html = new_html
+                print("NEW:", gift)
 
-        time.sleep(5)
+                send_message(
+                    f"🎁 New Gift!\n\n{gift}"
+                )
+
+        known = current
+
+        time.sleep(15)
 
     except Exception as e:
 
         print("ERROR:", e)
 
-        time.sleep(15)
+        time.sleep(30)
