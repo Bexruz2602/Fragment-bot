@@ -35,26 +35,17 @@ def get_gifts():
 
         page.goto(URL, timeout=60000)
 
-        page.wait_for_timeout(7000)
+        page.wait_for_timeout(8000)
 
-        links = page.eval_on_selector_all(
-            "a",
-            "elements => elements.map(e => e.href)"
-        )
-
-        for link in links:
-
-            if "/gift/" in link:
-
-                gifts.add(link)
+        cards = page.locator("body").inner_text()
 
         browser.close()
 
-    return gifts
+        return cards
 
-print("Loading existing gifts...")
+print("Loading...")
 
-known = get_gifts()
+old = get_gifts()
 
 print("Bot started...")
 
@@ -64,19 +55,15 @@ while True:
 
         current = get_gifts()
 
-        new_gifts = current - known
+        if current != old:
 
-        if new_gifts:
+            send_message(
+                "🎁 Yangi gift yoki auction paydo bo'ldi!"
+            )
 
-            for gift in new_gifts:
+            print("NEW CHANGE")
 
-                print("NEW:", gift)
-
-                send_message(
-                    f"🎁 New Gift!\n\n{gift}"
-                )
-
-        known = current
+            old = current
 
         time.sleep(15)
 
