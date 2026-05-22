@@ -6,9 +6,13 @@ from bs4 import BeautifulSoup
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 
-URL = "https://fragment.com/gifts?sort=listed&filter=auction"
+URL = "https://marketapp.ws/gifts/?tab=nfts&sort_by=recently_touch&filter_by=auction_no_bids"
 
-known_gifts = set()
+known = set()
+
+headers = {
+    "User-Agent": "Mozilla/5.0"
+}
 
 def send_message(text):
     requests.get(
@@ -20,49 +24,46 @@ def send_message(text):
     )
 
 def get_gifts():
-    html = requests.get(
-        URL,
-        headers={
-            "User-Agent": "Mozilla/5.0"
-        }
-    ).text
+    html = requests.get(URL, headers=headers).text
 
     soup = BeautifulSoup(html, "html.parser")
 
     gifts = set()
 
     for a in soup.find_all("a", href=True):
+
         href = a["href"]
 
-        if "/gift/" in href:
+        if "/gifts/" in href or "/gift/" in href:
             gifts.add(href)
 
     return gifts
 
-# FIRST LOAD
-known_gifts = get_gifts()
+# Birinchi yuklashda eski giftlarni eslab qoladi
+known = get_gifts()
 
 print("Bot started...")
 
 while True:
     try:
-        current_gifts = get_gifts()
+        current = get_gifts()
 
-        new_gifts = current_gifts - known_gifts
+        new_gifts = current - known
 
         for gift in new_gifts:
-            link = f"https://fragment.com{gift}"
+
+            full_link = f"https://marketapp.ws{gift}"
+
+            print("NEW:", full_link)
 
             send_message(
-                f"🎁 New Auction Gift!\n\n{link}"
+                f"🎁 New NFT Gift!\n\n{full_link}"
             )
 
-            print("NEW:", link)
+        known = current
 
-        known_gifts = current_gifts
-
-        time.sleep(15)
+        time.sleep(5)
 
     except Exception as e:
-        print(e)
-        time.sleep(30)
+        print("ERROR:", e)
+        time.sleep(15)
