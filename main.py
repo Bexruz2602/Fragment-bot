@@ -1,7 +1,7 @@
+from playwright.sync_api import sync_playwright
 import requests
 import time
 import os
-from bs4 import BeautifulSoup
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
@@ -9,10 +9,6 @@ CHAT_ID = os.getenv("CHAT_ID")
 URL = "https://marketapp.ws/gifts/?tab=nfts&sort_by=recently_touch&filter_by=auction_no_bids"
 
 known = set()
-
-headers = {
-    "User-Agent": "Mozilla/5.0"
-}
 
 def send_message(text):
     requests.get(
@@ -24,40 +20,51 @@ def send_message(text):
     )
 
 def get_gifts():
-    html = requests.get(URL, headers=headers).text
-
-    soup = BeautifulSoup(html, "html.parser")
 
     gifts = set()
 
-    for a in soup.find_all("a", href=True):
+    with sync_playwright() as p:
 
-        href = a["href"]
+        browser = p.chromium.launch(headless=True)
 
-        if "/gifts/" in href or "/gift/" in href:
-            gifts.add(href)
+        page = browser.new_page()
+
+        page.goto(URL, timeout=60000)
+
+        page.wait_for_timeout(5000)
+
+        links = page.locator("a").evaluate_all(
+            "(elements) => elements.map(e => e.href)"
+        )
+
+        for link in links:
+
+            if "/gift/" in link or "/gifts/" in link:
+                gifts.add(link)
+
+        browser.close()
 
     return gifts
 
-# Birinchi yuklashda eski giftlarni eslab qoladi
+print("Loading existing gifts...")
+
 known = get_gifts()
 
 print("Bot started...")
 
 while True:
     try:
+
         current = get_gifts()
 
         new_gifts = current - known
 
         for gift in new_gifts:
 
-            full_link = f"https://marketapp.ws{gift}"
-
-            print("NEW:", full_link)
+            print("NEW:", gift)
 
             send_message(
-                f"🎁 New NFT Gift!\n\n{full_link}"
+                f"🎁 New NFT Gift!\n\n{gift}"
             )
 
         known = current
@@ -65,5 +72,7 @@ while True:
         time.sleep(5)
 
     except Exception as e:
+
         print("ERROR:", e)
+
         time.sleep(15)
