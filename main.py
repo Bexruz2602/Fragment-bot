@@ -1,77 +1,47 @@
-import os
-import time
 import requests
-from playwright.sync_api import sync_playwright
+import time
+import os
+from bs4 import BeautifulSoup
 
-BOT_TOKEN = "TOKEN"
-CHAT_ID = "CHAT_ID"
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+CHAT_ID = os.getenv("CHAT_ID")
 
 URL = "https://fragment.com/gifts?sort=listed&filter=auction"
 
 seen = set()
 
-def send(text):
-    requests.post(
+def send_message(text):
+    requests.get(
         f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
-        data={
+        params={
             "chat_id": CHAT_ID,
             "text": text
         }
     )
 
-def get_gifts():
-    gifts = []
-
-    with sync_playwright() as p:
-        browser = p.chromium.launch(
-            headless=True,
-            args=["--no-sandbox"]
-        )
-
-        page = browser.new_page()
-
-        page.goto(URL, timeout=60000)
-
-        page.wait_for_timeout(7000)
-
-        html = page.content()
-
-        print(html[:500])
-
-        links = page.query_selector_all("a")
-
-        for l in links:
-            try:
-                text = l.inner_text().strip()
-
-                if text and len(text) > 5:
-                    gifts.append(text)
-
-            except:
-                pass
-
-        browser.close()
-
-    return gifts
-
-send("✅ BOT STARTED")
-
 while True:
     try:
-        gifts = get_gifts()
+        html = requests.get(
+            URL,
+            headers={
+                "User-Agent": "Mozilla/5.0"
+            }
+        ).text
 
-        print(gifts[:10])
+        soup = BeautifulSoup(html, "html.parser")
 
-        for g in gifts:
+        gifts = soup.find_all("a")
 
-            if g not in seen:
-                seen.add(g)
+        for gift in gifts:
+            text = gift.get_text(strip=True)
 
-                send(f"🎁 NEW GIFT:\n{g}")
+            if text and text not in seen:
+                seen.add(text)
 
-        print("checked")
+                send_message(f"🎁 New Auction Gift!\n\n{text}")
+
+        time.sleep(30)
 
     except Exception as e:
-        print("ERROR:", e)
-
-    time.sleep(20)
+        print(e)
+        time.sleep(60)
