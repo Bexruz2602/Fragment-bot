@@ -8,7 +8,7 @@ CHAT_ID = os.getenv("CHAT_ID")
 
 URL = "https://fragment.com/gifts?sort=listed&filter=auction"
 
-seen = set()
+known_gifts = set()
 
 def send_message(text):
     requests.get(
@@ -19,29 +19,50 @@ def send_message(text):
         }
     )
 
+def get_gifts():
+    html = requests.get(
+        URL,
+        headers={
+            "User-Agent": "Mozilla/5.0"
+        }
+    ).text
+
+    soup = BeautifulSoup(html, "html.parser")
+
+    gifts = set()
+
+    for a in soup.find_all("a", href=True):
+        href = a["href"]
+
+        if "/gift/" in href:
+            gifts.add(href)
+
+    return gifts
+
+# FIRST LOAD
+known_gifts = get_gifts()
+
+print("Bot started...")
+
 while True:
     try:
-        html = requests.get(
-            URL,
-            headers={
-                "User-Agent": "Mozilla/5.0"
-            }
-        ).text
+        current_gifts = get_gifts()
 
-        soup = BeautifulSoup(html, "html.parser")
+        new_gifts = current_gifts - known_gifts
 
-        gifts = soup.find_all("a")
+        for gift in new_gifts:
+            link = f"https://fragment.com{gift}"
 
-        for gift in gifts:
-            text = gift.get_text(strip=True)
+            send_message(
+                f"🎁 New Auction Gift!\n\n{link}"
+            )
 
-            if text and text not in seen:
-                seen.add(text)
+            print("NEW:", link)
 
-                send_message(f"🎁 New Auction Gift!\n\n{text}")
+        known_gifts = current_gifts
 
-        time.sleep(30)
+        time.sleep(15)
 
     except Exception as e:
         print(e)
-        time.sleep(60)
+        time.sleep(30)
