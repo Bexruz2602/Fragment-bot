@@ -22,22 +22,87 @@ URL = (
 
 seen_ids: set = set()
 first_run: bool = True
-captured_gifts: list = []
-found_api_urls: list = []
 
 
-def extract_gifts_from_data(data) -> list:
-    if isinstance(data, list):
-        return data
-    if isinstance(data, dict):
-        for key in ["items", "gifts", "data", "results", "nfts", "list", "docs"]:
-            if key in data and isinstance(data[key], list):
-                return data[key]
-    return []
+async def scrape_gifts(page) -> list[dict]:
+    await page.goto(URL, wait_until="networkidle", timeout=30_000)
+    await asyncio.sleep(5)
+
+    gifts = await page.evaluate("""() => {
+        // ── 1: Next.js __NEXT_DATA__ dan qidirish ──────────────────────────
+        function deepFindGifts(obj, depth) {
+            if (!obj || depth > 6) return null;
+            if (Array.isArray(obj) && obj.length > 0) {
+                const f = obj[0];
+                if (f && typeof f === 'object' && (
+                    f.name || f.title || f.slug ||
+                    f.gift_name || f.number || f.token_id
+                )) return obj;
+            }
+            if (typeof obj === 'object') {
+                for (const k of Object.keys(obj)) {
+                    const r = deepFindGifts(obj[k], depth + 1);
+                    if (r) return r;
+                }
+            }
+            return null;
+        }
+
+        try {
+            if (window.__NEXT_DATA__) {
+                const found = deepFindGifts(window.__NEXT_DATA__, 0);
+                if (found && found.length > 0) return found;
+            }
+        } catch(e) {}
+
+        // ── 2: marketapp.ws API so'rovlaridan olish ─────────────────────────
+        // (window.__marketData__ yoki shunga o'xshash global o'zgaruvchi)
+        for (const key of Object.keys(window)) {
+            try {
+                const val = window[key];
+                if (Array.isArray(val) && val.length > 0) {
+                    const f = val[0];
+                    if (f && typeof f === 'object' && (f.name || f.slug || f.number)) {
+                        return val;
+                    }
+                }
+            } catch(e) {}
+        }
+
+        // ── 3: DOM dan link orqali qidirish ─────────────────────────────────
+        const results = [];
+        const seen = new Set();
+
+        document.querySelectorAll('a[href]').forEach(link => {
+            const href = link.getAttribute('href') || '';
+            const m = href.match(/\/gifts\/([a-zA-Z0-9_-]+)/);
+            if (!m) return;
+
+            const id = m[1];
+            if (seen.has(id)) return;
+
+            // Faqat raqamli yoki slug ko'rinishidagi IDlar (config fayllar emas)
+            if (!/^[a-zA-Z0-9_-]{2,60}$/.test(id)) return;
+            seen.add(id);
+
+            const name = link.innerText.trim().substring(0, 120) || id;
+
+            const priceEl = link.querySelector(
+                '[class*="price"],[class*="bid"],[class*="ton"],[class*="amount"],[class*="floor"]'
+            );
+            const price = priceEl ? priceEl.innerText.trim() : '';
+
+            results.push({ id, slug: id, name, price, href });
+        });
+
+        return results;
+    }""")
+
+    return gifts or []
 
 
 async def main():
-    global seen_ids, first_run, captured_gifts, found_api_urls
+    global seen_ids, first_run
 
     bot = Bot(token=BOT_TOKEN)
 
@@ -46,69 +111,34 @@ async def main():
             headless=True,
             args=["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu"],
         )
-        context = await browser.new_context(
+        page = await browser.new_page(
             user_agent=(
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                 "AppleWebKit/537.36 (KHTML, like Gecko) "
                 "Chrome/124.0.0.0 Safari/537.36"
             )
         )
-        page = await context.new_page()
 
-        async def on_response(response):
-            if response.status != 200:
-                return
-            try:
-                data = await response.json()
-                gifts = extract_gifts_from_data(data)
-                if gifts:
-                    resp_url = response.url
-                    logger.info(f"✅ Gift API topildi: {resp_url} — {len(gifts)} ta gift")
-                    captured_gifts.extend(gifts)
-                    if resp_url not in found_api_urls:
-                        found_api_urls.append(resp_url)
-            except Exception:
-                pass
-
-        page.on("response", on_response)
+        logger.info("🚀 Monitoring boshlandi...")
 
         # ── BIRINCHI YUKLASH ───────────────────────────────────────────────────
-        captured_gifts.clear()
-        found_api_urls.clear()
+        gifts = await scrape_gifts(page)
+        logger.info(f"Birinchi run: {len(gifts)} ta gift")
 
-        logger.info("Sahifa yuklanmoqda...")
-        await page.goto(URL, wait_until="networkidle", timeout=30_000)
-        await asyncio.sleep(5)
-
-        # Debug xabari yuborish
-        if found_api_urls:
-            debug = "🔍 *API topildi:*\n\n"
-            for u in found_api_urls:
-                debug += f"`{u}`\n\n"
-            debug += f"Jami: *{len(captured_gifts)} ta gift*"
-        else:
-            debug = "⚠️ *Hech qanday Gift API topilmadi!*\n\nSayt boshqacha ishlaydi."
-
-        await bot.send_message(chat_id=CHAT_ID, text=debug, parse_mode=ParseMode.MARKDOWN)
-
-        # Barcha mavjud giftlarni "ko'rilgan" deb belgilash
-        for gift in captured_gifts:
-            gid = str(
-                gift.get("id") or gift.get("_id") or
-                gift.get("slug") or gift.get("token_id") or ""
-            ).strip()
+        for gift in gifts:
+            gid = str(gift.get("id") or gift.get("slug") or "").strip()
             if gid:
                 seen_ids.add(gid)
 
-        logger.info(f"{len(seen_ids)} ta gift birinchi run da saqlandi")
         first_run = False
 
         await bot.send_message(
             chat_id=CHAT_ID,
             text=(
-                f"✅ *Gift Monitor tayyor!*\n\n"
-                f"📦 Hozir *{len(seen_ids)} ta* gift kuzatilmoqda\n"
-                f"⏱ Har *{CHECK_INTERVAL} soniya*da yangilanadi"
+                f"✅ *Gift Monitor ishga tushdi!*\n\n"
+                f"📦 *{len(seen_ids)} ta* gift kuzatilmoqda\n"
+                f"⏱ Har *{CHECK_INTERVAL} soniya*da tekshiraman\n"
+                f"🔔 Yangi gift paydo bo'lsa xabar beraman!"
             ),
             parse_mode=ParseMode.MARKDOWN,
         )
@@ -116,30 +146,20 @@ async def main():
         # ── ASOSIY LOOP ────────────────────────────────────────────────────────
         while True:
             try:
-                captured_gifts.clear()
-
-                await page.goto(URL, wait_until="networkidle", timeout=30_000)
-                await asyncio.sleep(3)
-
-                logger.info(f"Tekshiruv: {len(captured_gifts)} ta gift olindi")
+                gifts = await scrape_gifts(page)
+                logger.info(f"Tekshiruv: {len(gifts)} ta gift topildi")
 
                 new_gifts = []
-                for gift in captured_gifts:
-                    gid = str(
-                        gift.get("id") or gift.get("_id") or
-                        gift.get("slug") or gift.get("token_id") or ""
-                    ).strip()
+                for gift in gifts:
+                    gid = str(gift.get("id") or gift.get("slug") or "").strip()
                     if gid and gid not in seen_ids:
                         seen_ids.add(gid)
                         new_gifts.append(gift)
 
                 for gift in new_gifts:
-                    name  = gift.get("name") or gift.get("title") or "Yangi Gift"
-                    price = (
-                        gift.get("price") or gift.get("min_bid") or
-                        gift.get("start_price") or "—"
-                    )
-                    slug  = gift.get("slug") or gift.get("id") or gift.get("_id") or ""
+                    name  = gift.get("name") or "Yangi Gift"
+                    price = gift.get("price") or "—"
+                    slug  = gift.get("slug") or gift.get("id") or ""
                     link  = f"https://marketapp.ws/gifts/{slug}" if slug else URL
 
                     text = (
