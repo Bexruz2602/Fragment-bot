@@ -1,92 +1,156 @@
-from playwright.sync_api import sync_playwright
-import requests
-import time
+import asyncio
 import os
+import logging
+from playwright.async_api import async_playwright
+from telegram import Bot
+from telegram.constants import ParseMode
 
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-CHAT_ID = os.getenv("CHAT_ID")
+logging.basicConfig(
+    format="%(asctime)s | %(levelname)s | %(message)s",
+    level=logging.INFO
+)
+logger = logging.getLogger(__name__)
 
-URL = "https://marketapp.ws/gifts/?tab=nfts&sort_by=recently_touch&filter_by=auction_no_bids"
+BOT_TOKEN      = os.environ["BOT_TOKEN"]
+CHAT_ID        = os.environ["CHAT_ID"]
+CHECK_INTERVAL = int(os.getenv("CHECK_INTERVAL", "15"))
 
-known = set()
+URL = (
+    "https://marketapp.ws/gifts/"
+    "?tab=nfts&sort_by=recently_touch&filter_by=auction_no_bids"
+)
 
-def send_message(text):
+seen_ids: set = set()
+first_run: bool = True
 
-    requests.get(
-        f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
-        params={
-            "chat_id": CHAT_ID,
-            "text": text
-        }
-    )
 
-def get_gifts():
+async def scrape_gifts(page) -> list[dict]:
+    try:
+        await page.goto(URL, wait_until="domcontentloaded", timeout=30_000)
+    except Exception as e:
+        logger.warning(f"Sahifani ochishda xato: {e}")
+        return []
 
-    gifts = set()
+    await asyncio.sleep(5)
 
-    with sync_playwright() as p:
+    gifts = await page.evaluate("""() => {
+        const results = [];
+        document.querySelectorAll('a[href*="/gifts/"]').forEach(link => {
+            const href  = link.getAttribute('href') || '';
+            const match = href.match(/\\/gifts\\/([^/?#]+)/);
+            if (!match) return;
 
-        browser = p.chromium.launch(
-            headless=True,
-            args=["--no-sandbox"]
-        )
+            const id   = match[1];
+            const name = (link.textContent || '').trim().substring(0, 120) || id;
 
-        page = browser.new_page()
+            const priceEl = link.querySelector(
+                '[class*="price"],[class*="bid"],[class*="ton"],[class*="amount"]'
+            );
+            const price = priceEl ? priceEl.textContent.trim() : '';
 
-        page.goto(URL, timeout=60000)
+            const img    = link.querySelector('img');
+            const imgSrc = img ? img.src : '';
 
-        page.wait_for_timeout(10000)
+            const timerEl = link.querySelector('[class*="timer"],[class*="time"],[class*="remaining"]');
+            const timer   = timerEl ? timerEl.textContent.trim() : '';
 
-        # SAYTDAGI BARCHA LINKLARNI OLADI
-        links = page.eval_on_selector_all(
-            "a",
-            "els => els.map(e => e.href)"
-        )
-
-        for link in links:
-
-            if "gift" in link.lower():
-
-                gifts.add(link)
-
-        browser.close()
+            results.push({ id, name, price, href, imgSrc, timer });
+        });
+        return results;
+    }""")
 
     return gifts
 
-print("Loading existing gifts...")
 
-known = get_gifts()
+async def main():
+    global seen_ids, first_run
 
-print("KNOWN:", len(known))
-
-print("Bot started...")
-
-while True:
+    bot = Bot(token=BOT_TOKEN)
 
     try:
-
-        current = get_gifts()
-
-        print("CURRENT:", len(current))
-
-        new_gifts = current - known
-
-        if new_gifts:
-
-            for gift in new_gifts:
-
-                print("NEW:", gift)
-
-                send_message(
-                    f"🎁 New Gift!\n\n{gift}"
-                )
-
-        known = current
-
-        time.sleep(10)
-
+        await bot.send_message(
+            chat_id=CHAT_ID,
+            text=(
+                "✅ *Gift Monitor ishga tushdi!*\n\n"
+                f"⏱ Har *{CHECK_INTERVAL} soniya*da tekshiraman\n"
+                "🔔 Yangi auction gifti paydo bo'lsa darhol xabar beraman!"
+            ),
+            parse_mode=ParseMode.MARKDOWN,
+        )
     except Exception as e:
+        logger.error(f"Start xabarida xato: {e}")
 
-        print("ERROR:", e)
+    async with async_playwright() as pw:
+        browser = await pw.chromium.launch(
+            headless=True,
+            args=["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu"],
+        )
+        page = await browser.new_page(
+            user_agent=(
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/124.0.0.0 Safari/537.36"
+            )
+        )
 
-        time.sleep(20)
+        logger.info("🚀 Monitoring boshlandi...")
+
+        while True:
+            try:
+                gifts = await scrape_gifts(page)
+                logger.info(f"Sahifada {len(gifts)} ta gift topildi")
+
+                new_gifts = []
+                for gift in gifts:
+                    gid = gift.get("id", "").strip()
+                    if gid and gid not in seen_ids:
+                        seen_ids.add(gid)
+                        if not first_run:
+                            new_gifts.append(gift)
+
+                first_run = False
+
+                for gift in new_gifts:
+                    name  = gift.get("name", "Noma'lum Gift")
+                    price = gift.get("price") or "—"
+                    timer = gift.get("timer") or ""
+                    href  = gift.get("href", "")
+                    link  = (
+                        f"https://marketapp.ws{href}"
+                        if href.startswith("/") else href
+                    )
+
+                    text = (
+                        "🎁 *Yangi Gift Auksionga Qo'yildi!*\n\n"
+                        f"📦 *Nomi:* {name}\n"
+                        f"💎 *Narx:* {price}\n"
+                        + (f"⏰ *Vaqt:* {timer}\n" if timer else "")
+                        + f"\n[👉 Ko'rish]({link})"
+                    )
+
+                    try:
+                        await bot.send_message(
+                            chat_id=CHAT_ID,
+                            text=text,
+                            parse_mode=ParseMode.MARKDOWN,
+                            disable_web_page_preview=False,
+                        )
+                        logger.info(f"✅ Xabar yuborildi: {name}")
+                    except Exception as e:
+                        logger.error(f"Xabar yuborishda xato: {e}")
+
+                if not new_gifts:
+                    logger.info(f"⏳ Yangi gift yo'q — {CHECK_INTERVAL}s kutilmoqda...")
+
+            except Exception as e:
+                logger.error(f"❌ Asosiy xato: {e}")
+                try:
+                    await page.reload(timeout=15_000)
+                except Exception:
+                    pass
+
+            await asyncio.sleep(CHECK_INTERVAL)
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
