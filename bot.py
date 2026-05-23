@@ -4,6 +4,7 @@ import logging
 from playwright.async_api import async_playwright
 from telegram import Bot
 from telegram.constants import ParseMode
+import json
 
 logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(message)s",
@@ -22,48 +23,22 @@ URL = (
 
 seen_ids: set = set()
 first_run: bool = True
+captured_gifts: list = []
 
 
-async def scrape_gifts(page) -> list[dict]:
-    try:
-        await page.goto(URL, wait_until="domcontentloaded", timeout=30_000)
-    except Exception as e:
-        logger.warning(f"Sahifani ochishda xato: {e}")
-        return []
-
-    await asyncio.sleep(5)
-
-    gifts = await page.evaluate("""() => {
-        const results = [];
-        document.querySelectorAll('a[href*="/gifts/"]').forEach(link => {
-            const href  = link.getAttribute('href') || '';
-            const match = href.match(/\\/gifts\\/([^/?#]+)/);
-            if (!match) return;
-
-            const id   = match[1];
-            const name = (link.textContent || '').trim().substring(0, 120) || id;
-
-            const priceEl = link.querySelector(
-                '[class*="price"],[class*="bid"],[class*="ton"],[class*="amount"]'
-            );
-            const price = priceEl ? priceEl.textContent.trim() : '';
-
-            const img    = link.querySelector('img');
-            const imgSrc = img ? img.src : '';
-
-            const timerEl = link.querySelector('[class*="timer"],[class*="time"],[class*="remaining"]');
-            const timer   = timerEl ? timerEl.textContent.trim() : '';
-
-            results.push({ id, name, price, href, imgSrc, timer });
-        });
-        return results;
-    }""")
-
-    return gifts
+def extract_gifts_from_data(data) -> list:
+    """JSON dan gift ro'yxatini olish"""
+    if isinstance(data, list):
+        return data
+    if isinstance(data, dict):
+        for key in ["items", "gifts", "data", "results", "nfts", "list"]:
+            if key in data and isinstance(data[key], list):
+                return data[key]
+    return []
 
 
 async def main():
-    global seen_ids, first_run
+    global seen_ids, first_run, captured_gifts
 
     bot = Bot(token=BOT_TOKEN)
 
@@ -85,24 +60,58 @@ async def main():
             headless=True,
             args=["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu"],
         )
-        page = await browser.new_page(
+        context = await browser.new_context(
             user_agent=(
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                 "AppleWebKit/537.36 (KHTML, like Gecko) "
                 "Chrome/124.0.0.0 Safari/537.36"
             )
         )
+        page = await context.new_page()
+
+        # ── API javoblarini tutib olish ────────────────────────────────────────
+        async def on_response(response):
+            url = response.url
+            if response.status != 200:
+                return
+            # JSON qaytaradigan so'rovlar
+            ct = response.headers.get("content-type", "")
+            if "json" not in ct:
+                return
+            try:
+                data = await response.json()
+                gifts = extract_gifts_from_data(data)
+                if gifts:
+                    logger.info(f"API topildi: {url} — {len(gifts)} ta gift")
+                    captured_gifts.extend(gifts)
+            except Exception:
+                pass
+
+        page.on("response", on_response)
 
         logger.info("🚀 Monitoring boshlandi...")
 
         while True:
             try:
-                gifts = await scrape_gifts(page)
-                logger.info(f"Sahifada {len(gifts)} ta gift topildi")
+                captured_gifts.clear()
+
+                await page.goto(URL, wait_until="networkidle", timeout=30_000)
+                await asyncio.sleep(3)
+
+                logger.info(f"Jami {len(captured_gifts)} ta gift API dan olindi")
 
                 new_gifts = []
-                for gift in gifts:
-                    gid = gift.get("id", "").strip()
+                for gift in captured_gifts:
+                    # ID ni turli nomlar bilan qidirish
+                    gid = str(
+                        gift.get("id") or
+                        gift.get("_id") or
+                        gift.get("slug") or
+                        gift.get("token_id") or
+                        gift.get("number") or
+                        ""
+                    ).strip()
+
                     if gid and gid not in seen_ids:
                         seen_ids.add(gid)
                         if not first_run:
@@ -111,21 +120,35 @@ async def main():
                 first_run = False
 
                 for gift in new_gifts:
-                    name  = gift.get("name", "Noma'lum Gift")
-                    price = gift.get("price") or "—"
-                    timer = gift.get("timer") or ""
-                    href  = gift.get("href", "")
-                    link  = (
-                        f"https://marketapp.ws{href}"
-                        if href.startswith("/") else href
+                    # Nom
+                    name = (
+                        gift.get("name") or
+                        gift.get("title") or
+                        gift.get("gift_name") or
+                        "Yangi Gift"
                     )
+                    # Narx
+                    price = (
+                        gift.get("price") or
+                        gift.get("min_bid") or
+                        gift.get("start_price") or
+                        gift.get("floor_price") or
+                        "—"
+                    )
+                    # Link
+                    slug = (
+                        gift.get("slug") or
+                        gift.get("id") or
+                        gift.get("_id") or
+                        ""
+                    )
+                    link = f"https://marketapp.ws/gifts/{slug}" if slug else URL
 
                     text = (
                         "🎁 *Yangi Gift Auksionga Qo'yildi!*\n\n"
                         f"📦 *Nomi:* {name}\n"
                         f"💎 *Narx:* {price}\n"
-                        + (f"⏰ *Vaqt:* {timer}\n" if timer else "")
-                        + f"\n[👉 Ko'rish]({link})"
+                        f"\n[👉 Ko'rish]({link})"
                     )
 
                     try:
@@ -133,7 +156,6 @@ async def main():
                             chat_id=CHAT_ID,
                             text=text,
                             parse_mode=ParseMode.MARKDOWN,
-                            disable_web_page_preview=False,
                         )
                         logger.info(f"✅ Xabar yuborildi: {name}")
                     except Exception as e:
@@ -143,7 +165,7 @@ async def main():
                     logger.info(f"⏳ Yangi gift yo'q — {CHECK_INTERVAL}s kutilmoqda...")
 
             except Exception as e:
-                logger.error(f"❌ Asosiy xato: {e}")
+                logger.error(f"❌ Xato: {e}")
                 try:
                     await page.reload(timeout=15_000)
                 except Exception:
