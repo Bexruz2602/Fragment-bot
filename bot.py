@@ -4,10 +4,7 @@ import logging
 from playwright.async_api import async_playwright
 from telegram import Bot
 
-logging.basicConfig(
-    format="%(asctime)s | %(levelname)s | %(message)s",
-    level=logging.INFO
-)
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 BOT_TOKEN = os.environ["BOT_TOKEN"]
@@ -35,38 +32,51 @@ async def main():
             )
         )
 
-        marketapp_requests = []
-
-        # Faqat marketapp.ws ga ketgan SO'ROVLAR
-        async def on_request(request):
-            if "marketapp.ws" in request.url:
-                line = f"{request.method} {request.url}"
-                marketapp_requests.append(line)
-                logger.info(f"REQ: {line}")
-
-        page.on("request", on_request)
-
-        await bot.send_message(chat_id=CHAT_ID, text="⏳ Sahifa yuklanmoqda...")
-
         await page.goto(URL, wait_until="networkidle", timeout=30_000)
         await asyncio.sleep(8)
 
-        # Sahifa HTML si bor yoqligini tekshirish
-        html_len = await page.evaluate("document.body.innerHTML.length")
-        title    = await page.title()
+        result = await page.evaluate("""() => {
+            // #12345 ko'rinishidagi gift nomlarini qidirish
+            const allLinks = Array.from(document.querySelectorAll('a'));
+            const giftLinks = allLinks.filter(a => {
+                const text = a.innerText || '';
+                const href = a.getAttribute('href') || '';
+                return text.match(/#\d{3,}/) || href.match(/gift|nft|item/i);
+            });
 
-        # Natijani yuborish
-        if marketapp_requests:
-            msg = f"📡 *marketapp.ws ga {len(marketapp_requests)} ta so'rov:*\n\n"
-            for r in marketapp_requests[:20]:
-                msg += f"`{r[:100]}`\n"
+            if (giftLinks.length > 0) {
+                return {
+                    found: giftLinks.length,
+                    samples: giftLinks.slice(0, 2).map(a => ({
+                        href: a.getAttribute('href'),
+                        text: (a.innerText || '').substring(0, 80),
+                        outerHTML: a.outerHTML.substring(0, 400)
+                    }))
+                };
+            }
+
+            // Hech narsa topilmasa — sahifaning birinchi 3000 belgisini yuborish
+            return {
+                found: 0,
+                bodyStart: document.body.innerHTML.substring(0, 3000)
+            };
+        }""")
+
+        if result.get("found", 0) > 0:
+            msg = f"✅ *{result['found']} ta gift linki topildi!*\n\n"
+            for i, s in enumerate(result.get("samples", []), 1):
+                msg += f"*{i}. href:* `{s['href']}`\n"
+                msg += f"*text:* `{s['text']}`\n"
+                msg += f"*html:*\n```\n{s['outerHTML'][:300]}\n```\n\n"
         else:
-            msg = "⚠️ marketapp.ws ga hech qanday so'rov ketmadi!"
+            body = result.get("bodyStart", "")
+            msg = f"⚠️ Gift linki topilmadi\n\n*HTML boshi:*\n```\n{body[:2000]}\n```"
 
-        msg += f"\n\n📄 Sahifa: `{title}`\n📏 HTML hajmi: `{html_len}` belgi"
+        # Telegram 4096 belgidan uzun qabul qilmaydi
+        if len(msg) > 4000:
+            msg = msg[:4000] + "\n...(qisqartirildi)"
 
         await bot.send_message(chat_id=CHAT_ID, text=msg, parse_mode="Markdown")
-        logger.info("Debug xabari yuborildi")
 
 
 if __name__ == "__main__":
