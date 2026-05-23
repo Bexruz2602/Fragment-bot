@@ -1,83 +1,66 @@
 import asyncio
 import os
-import logging
 from playwright.async_api import async_playwright
 from telegram import Bot
 
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
-
 BOT_TOKEN = os.environ["BOT_TOKEN"]
 CHAT_ID   = os.environ["CHAT_ID"]
-
-URL = (
-    "https://marketapp.ws/gifts/"
-    "?tab=nfts&sort_by=recently_touch&filter_by=auction_no_bids"
-)
-
+URL = "https://marketapp.ws/gifts/?tab=nfts&sort_by=recently_touch&filter_by=auction_no_bids"
 
 async def main():
     bot = Bot(token=BOT_TOKEN)
-
     async with async_playwright() as pw:
-        browser = await pw.chromium.launch(
-            headless=True,
-            args=["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu"],
-        )
-        page = await browser.new_page(
-            user_agent=(
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/124.0.0.0 Safari/537.36"
-            )
-        )
-
+        browser = await pw.chromium.launch(headless=True, args=["--no-sandbox","--disable-dev-shm-usage"])
+        page = await browser.new_page(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36")
         await page.goto(URL, wait_until="networkidle", timeout=30_000)
         await asyncio.sleep(8)
 
         result = await page.evaluate("""() => {
-            // #12345 ko'rinishidagi gift nomlarini qidirish
-            const allLinks = Array.from(document.querySelectorAll('a'));
-            const giftLinks = allLinks.filter(a => {
-                const text = a.innerText || '';
-                const href = a.getAttribute('href') || '';
-                return text.match(/#\d{3,}/) || href.match(/gift|nft|item/i);
-            });
+            // Gift, card, item, nft nomli classlarni qidirish
+            const keywords = ['gift', 'card', 'item', 'nft', 'lot', 'product', 'tile'];
+            let found = [];
 
-            if (giftLinks.length > 0) {
-                return {
-                    found: giftLinks.length,
-                    samples: giftLinks.slice(0, 2).map(a => ({
-                        href: a.getAttribute('href'),
-                        text: (a.innerText || '').substring(0, 80),
-                        outerHTML: a.outerHTML.substring(0, 400)
-                    }))
-                };
+            for (const kw of keywords) {
+                const els = document.querySelectorAll(`[class*="${kw}"]`);
+                if (els.length > 3) {
+                    found.push({
+                        keyword: kw,
+                        count: els.length,
+                        sample: els[0].outerHTML.substring(0, 500)
+                    });
+                }
             }
 
-            // Hech narsa topilmasa — sahifaning birinchi 3000 belgisini yuborish
-            return {
-                found: 0,
-                bodyStart: document.body.innerHTML.substring(0, 3000)
-            };
+            // Barcha a[href] lardan /gift yoki raqamli IDli linklar
+            const allLinks = Array.from(document.querySelectorAll('a[href]'));
+            const deepLinks = allLinks
+                .map(a => a.getAttribute('href'))
+                .filter(h => h && h.length > 8 && h !== '/gifts/' && h.includes('gift'))
+                .slice(0, 5);
+
+            return { classMatches: found, deepLinks };
         }""")
 
-        if result.get("found", 0) > 0:
-            msg = f"✅ *{result['found']} ta gift linki topildi!*\n\n"
-            for i, s in enumerate(result.get("samples", []), 1):
-                msg += f"*{i}. href:* `{s['href']}`\n"
-                msg += f"*text:* `{s['text']}`\n"
-                msg += f"*html:*\n```\n{s['outerHTML'][:300]}\n```\n\n"
-        else:
-            body = result.get("bodyStart", "")
-            msg = f"⚠️ Gift linki topilmadi\n\n*HTML boshi:*\n```\n{body[:2000]}\n```"
+        msg = ""
 
-        # Telegram 4096 belgidan uzun qabul qilmaydi
+        if result['classMatches']:
+            msg += f"🎯 *Class topildi:*\n\n"
+            for m in result['classMatches'][:4]:
+                msg += f"`{m['keyword']}` → {m['count']} ta element\n"
+                msg += f"```\n{m['sample'][:400]}\n```\n\n"
+
+        if result['deepLinks']:
+            msg += f"🔗 *Gift linklar:*\n"
+            for l in result['deepLinks']:
+                msg += f"`{l}`\n"
+
+        if not msg:
+            msg = "⚠️ Hech narsa topilmadi"
+
         if len(msg) > 4000:
-            msg = msg[:4000] + "\n...(qisqartirildi)"
+            msg = msg[:4000] + "...(qisqartirildi)"
 
         await bot.send_message(chat_id=CHAT_ID, text=msg, parse_mode="Markdown")
-
 
 if __name__ == "__main__":
     asyncio.run(main())
