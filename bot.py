@@ -6,18 +6,18 @@ from telegram import Bot
 from telegram.constants import ParseMode
 
 logging.basicConfig(
-   format="%(asctime)s | %(levelname)s | %(message)s",
-   level=logging.INFO
+    format="%(asctime)s | %(levelname)s | %(message)s",
+    level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
 BOT_TOKEN      = os.environ["BOT_TOKEN"]
-CHAT_ID        = os.environ["CHAT_ID"]
+CHAT_IDS       = [os.environ["CHAT_ID"], "1165764811"]
 CHECK_INTERVAL = int(os.getenv("CHECK_INTERVAL", "15"))
 
 URL = (
-   "https://marketapp.ws/gifts/"
-   "?tab=nfts&sort_by=recently_touch&filter_by=auction_no_bids"
+    "https://marketapp.ws/gifts/"
+    "?tab=nfts&sort_by=recently_touch&filter_by=auction_no_bids"
 )
 
 seen_ids: set = set()
@@ -25,133 +25,142 @@ first_run: bool = True
 
 
 async def scrape_gifts(page) -> list[dict]:
-   try:
-       await page.goto(URL, wait_until="networkidle", timeout=30_000)
-   except Exception as e:
-       logger.warning(f"Sahifa yuklanmadi: {e}")
-       return []
+    try:
+        await page.goto(URL, wait_until="networkidle", timeout=30_000)
+    except Exception as e:
+        logger.warning(f"Sahifa yuklanmadi: {e}")
+        return []
 
-   await asyncio.sleep(6)
+    await asyncio.sleep(6)
 
-   gifts = await page.evaluate("""() => {
-       const results = [];
-       const cards = document.querySelectorAll('.js-grid-card[data-nft-address]');
+    gifts = await page.evaluate("""() => {
+        const results = [];
+        const cards = document.querySelectorAll('.js-grid-card[data-nft-address]');
 
-       cards.forEach(card => {
-           const address = card.getAttribute('data-nft-address');
-           if (!address) return;
+        cards.forEach(card => {
+            const address = card.getAttribute('data-nft-address');
+            if (!address) return;
 
-           const linkEl = card.querySelector('a.tm-grid-item-link');
-           const href   = linkEl ? linkEl.getAttribute('href') : '/nft/' + address + '/';
+            const linkEl = card.querySelector('a.tm-grid-item-link');
+            const href   = linkEl ? linkEl.getAttribute('href') : '/nft/' + address + '/';
 
-           const itemName = card.querySelector('.item-name');
-           const itemNum  = card.querySelector('.item-num');
-           const name = (
-               (itemName ? itemName.innerText.trim() : '') +
-               (itemNum  ? itemNum.innerText.trim()  : '')
-           ).trim();
+            const itemName = card.querySelector('.item-name');
+            const itemNum  = card.querySelector('.item-num');
+            const name = (
+                (itemName ? itemName.innerText.trim() : '') +
+                (itemNum  ? itemNum.innerText.trim()  : '')
+            ).trim();
 
-           const tonEl = card.querySelector('.icon-ton');
-           const usdEl = card.querySelector('.tm-grid-item-values .tm-value:not(.icon-ton)');
-           const ton   = tonEl ? tonEl.innerText.trim() : '';
-           const usd   = usdEl ? usdEl.innerText.trim() : '';
-           const price = ton ? '\u25c8' + ton + ' ' + usd : usd || '\u2014';
+            const tonEl = card.querySelector('.icon-ton');
+            const usdEl = card.querySelector('.tm-grid-item-values .tm-value:not(.icon-ton)');
+            const ton   = tonEl ? tonEl.innerText.trim() : '';
+            const usd   = usdEl ? usdEl.innerText.trim() : '';
+            const price = ton ? '\u25c8' + ton + ' ' + usd : usd || '\u2014';
 
-           const timerEl = card.querySelector('.js-timer-wrap div');
-           const timer   = timerEl ? timerEl.innerText.trim() : '';
+            const timerEl = card.querySelector('.js-timer-wrap div');
+            const timer   = timerEl ? timerEl.innerText.trim() : '';
 
-           results.push({ id: address, href, name, price, timer });
-       });
+            results.push({ id: address, href, name, price, timer });
+        });
 
-       return results;
-   }""")
+        return results;
+    }""")
 
-   return gifts or []
+    return gifts or []
 
 
 async def main():
-   global seen_ids, first_run
+    global seen_ids, first_run
 
-   bot = Bot(token=BOT_TOKEN)
+    bot = Bot(token=BOT_TOKEN)
 
-   async with async_playwright() as pw:
-       browser = await pw.chromium.launch(
-           headless=True,
-           args=["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu"],
-       )
-       page = await browser.new_page(
-           user_agent=(
-               "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-               "AppleWebKit/537.36 (KHTML, like Gecko) "
-               "Chrome/124.0.0.0 Safari/537.36"
-           )
-       )
+    async with async_playwright() as pw:
+        browser = await pw.chromium.launch(
+            headless=True,
+            args=["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu"],
+        )
+        page = await browser.new_page(
+            user_agent=(
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/124.0.0.0 Safari/537.36"
+            )
+        )
 
-       logger.info("Birinchi yuklash...")
-       gifts = await scrape_gifts(page)
-       logger.info(f"Birinchi run: {len(gifts)} ta gift")
+        logger.info("Birinchi yuklash...")
+        gifts = await scrape_gifts(page)
+        logger.info(f"Birinchi run: {len(gifts)} ta gift")
 
-       for gift in gifts:
-           seen_ids.add(gift["id"])
+        for gift in gifts:
+            seen_ids.add(gift["id"])
 
-       first_run = False
+        first_run = False
 
-       await bot.send_message(
-           chat_id=CHAT_ID,
-           text=(
-               f"✅ *Gift Monitor ishga tushdi!*\n\n"
-               f"📦 *{len(seen_ids)} ta* gift kuzatilmoqda\n"
-               f"⏱ Har *{CHECK_INTERVAL} soniya*da tekshiraman\n"
-               f"🔔 Yangi auction gifti paydo bo'lsa xabar beraman!"
-           ),
-           parse_mode=ParseMode.MARKDOWN,
-       )
+        for cid in CHAT_IDS:
+            try:
+                await bot.send_message(
+                    chat_id=cid,
+                    text=(
+                        f"✅ *Gift Monitor ishga tushdi!*\n\n"
+                        f"📦 *{len(seen_ids)} ta* gift kuzatilmoqda\n"
+                        f"⏱ Har *{CHECK_INTERVAL} soniya*da tekshiraman\n"
+                        f"🔔 Yangi auction gifti paydo bo'lsa xabar beraman!"
+                    ),
+                    parse_mode=ParseMode.MARKDOWN,
+                )
+            except Exception as e:
+                logger.error(f"Start xabari yuborilmadi {cid}: {e}")
 
-       while True:
-           try:
-               gifts = await scrape_gifts(page)
-               logger.info(f"Tekshiruv: {len(gifts)} ta gift")
+        while True:
+            try:
+                gifts = await scrape_gifts(page)
+                logger.info(f"Tekshiruv: {len(gifts)} ta gift")
 
-               new_gifts = []
-               for gift in gifts:
-                   if gift["id"] not in seen_ids:
-                       seen_ids.add(gift["id"])
-                       new_gifts.append(gift)
+                new_gifts = []
+                for gift in gifts:
+                    if gift["id"] not in seen_ids:
+                        seen_ids.add(gift["id"])
+                        new_gifts.append(gift)
 
-               for gift in new_gifts:
-                   name  = gift.get("name")  or "Yangi Gift"
-                   price = gift.get("price") or "—"
-                   timer = gift.get("timer") or ""
-                   href  = gift.get("href")  or ""
-                   link  = f"https://marketapp.ws{href}" if href.startswith("/") else href
+                for gift in new_gifts:
+                    name  = gift.get("name")  or "Yangi Gift"
+                    price = gift.get("price") or "—"
+                    timer = gift.get("timer") or ""
+                    href  = gift.get("href")  or ""
+                    link  = f"https://marketapp.ws{href}" if href.startswith("/") else href
 
-                   text = (
-                       "🎁 *Yangi Gift Auksionga Qo'yildi!*\n\n"
-                       f"📦 *Nomi:* {name}\n"
-                       f"💎 *Narx:* {price}\n"
-                       + (f"⏰ *Vaqt:* {timer}\n" if timer else "")
-                       + f"\n[👉 Ko'rish]({link})"
-                   )
+                    text = (
+                        "🎁 *Yangi Gift Auksionga Qo'yildi!*\n\n"
+                        f"📦 *Nomi:* {name}\n"
+                        f"💎 *Narx:* {price}\n"
+                        + (f"⏰ *Vaqt:* {timer}\n" if timer else "")
+                        + f"\n[👉 Ko'rish]({link})"
+                    )
 
-                   await bot.send_message(
-                       chat_id=CHAT_ID,
-                       text=text,
-                       parse_mode=ParseMode.MARKDOWN,
-                   )
-                   logger.info(f"✅ Yuborildi: {name}")
+                    for cid in CHAT_IDS:
+                        try:
+                            await bot.send_message(
+                                chat_id=cid,
+                                text=text,
+                                parse_mode=ParseMode.MARKDOWN,
+                            )
+                        except Exception as e:
+                            logger.error(f"Xabar yuborilmadi {cid}: {e}")
 
-               if not new_gifts:
-                   logger.info(f"⏳ Yangi gift yo'q — {CHECK_INTERVAL}s")
+                    logger.info(f"✅ Yuborildi: {name}")
 
-           except Exception as e:
-               logger.error(f"❌ Xato: {e}")
-               try:
-                   await page.reload(timeout=15_000)
-               except Exception:
-                   pass
+                if not new_gifts:
+                    logger.info(f"⏳ Yangi gift yo'q — {CHECK_INTERVAL}s")
 
-           await asyncio.sleep(CHECK_INTERVAL)
+            except Exception as e:
+                logger.error(f"❌ Xato: {e}")
+                try:
+                    await page.reload(timeout=15_000)
+                except Exception:
+                    pass
+
+            await asyncio.sleep(CHECK_INTERVAL)
 
 
 if __name__ == "__main__":
-   asyncio.run(main())
+    asyncio.run(main())
